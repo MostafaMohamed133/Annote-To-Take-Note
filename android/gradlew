@@ -1,0 +1,64 @@
+#!/usr/bin/env sh
+set -eu
+
+GRADLE_VERSION="8.12"
+EXPECTED_SHA256="7a00d51fb93147819aab76024feece20b6b84e420694101f276be952e08bef03"
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+WRAPPER_DISTS="$GRADLE_USER_HOME/wrapper/dists"
+GRADLE_COMMAND=""
+
+# Reuse Gradle 8.12 cached by another project when possible.
+if [ -d "$WRAPPER_DISTS" ]; then
+  GRADLE_COMMAND="$(find "$WRAPPER_DISTS" -type f -path '*/gradle-8.12/bin/gradle' -print -quit 2>/dev/null || true)"
+fi
+
+# Reuse a matching Gradle installation on PATH.
+if [ -z "$GRADLE_COMMAND" ] && command -v gradle >/dev/null 2>&1; then
+  if gradle --version 2>/dev/null | grep -q '^Gradle 8\.12'; then
+    GRADLE_COMMAND="$(command -v gradle)"
+  fi
+fi
+
+if [ -z "$GRADLE_COMMAND" ]; then
+  TARGET_ROOT="$WRAPPER_DISTS/road_guard/gradle-8.12"
+  DIST_DIR="$TARGET_ROOT/gradle-8.12"
+  ZIP_FILE="$TARGET_ROOT/gradle-8.12-bin.zip"
+  GRADLE_COMMAND="$DIST_DIR/bin/gradle"
+  mkdir -p "$TARGET_ROOT"
+
+  if [ ! -x "$GRADLE_COMMAND" ]; then
+    command -v curl >/dev/null 2>&1 || { echo 'curl is required to download Gradle 8.12.' >&2; exit 1; }
+    command -v sha256sum >/dev/null 2>&1 || { echo 'sha256sum is required to verify the Gradle download.' >&2; exit 1; }
+
+    downloaded=false
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+      rm -f "$ZIP_FILE"
+      echo "Downloading Gradle 8.12 (attempt $attempt of 3)..." >&2
+      if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 900 \
+        'https://services.gradle.org/distributions/gradle-8.12-bin.zip' -o "$ZIP_FILE"; then
+        actual_sha="$(sha256sum "$ZIP_FILE" | awk '{print $1}')"
+        if [ "$actual_sha" = "$EXPECTED_SHA256" ]; then
+          if unzip -q -o "$ZIP_FILE" -d "$TARGET_ROOT" && [ -x "$GRADLE_COMMAND" ]; then
+            rm -f "$ZIP_FILE"
+            downloaded=true
+            break
+          fi
+        else
+          echo "Checksum mismatch: $actual_sha" >&2
+        fi
+      fi
+      rm -f "$ZIP_FILE"
+      rm -rf "$DIST_DIR"
+      sleep $((attempt * 2))
+      attempt=$((attempt + 1))
+    done
+
+    if [ "$downloaded" != true ]; then
+      echo 'Could not obtain a verified Gradle 8.12 distribution.' >&2
+      exit 1
+    fi
+  fi
+fi
+
+exec "$GRADLE_COMMAND" "$@"
